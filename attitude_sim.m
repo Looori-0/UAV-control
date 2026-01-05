@@ -21,6 +21,9 @@ function out = attitude_sim(ctrlName, sim)
     if ~isfield(sim,'dist_fn') || isempty(sim.dist_fn)
         sim.dist_fn = @(t,x) [0;0;0]; % default: no disturbance
     end
+    if ~isfield(sim,'tau_smooth_tau')
+        sim.tau_smooth_tau = 0;
+    end
     if ~isfield(sim,'ffts') || ~isfield(sim.ffts,'rcond_thr')
         sim.ffts.rcond_thr = 1e-8;
     end
@@ -83,6 +86,16 @@ function out = attitude_sim(ctrlName, sim)
     out.t = t_grid;
     out.q = q;
     out.w = w;
+    % optional output-only smoothing for plotting (does not affect dynamics)
+    if sim.tau_smooth_tau > 0
+        alpha = dt / (sim.tau_smooth_tau + dt);
+        tau_f = tau;
+        for k = 2:size(tau,1)
+            tau_f(k,:) = tau_f(k-1,:) + alpha * (tau(k,:) - tau_f(k-1,:));
+        end
+        tau = tau_f;
+    end
+
     out.tau = tau;
     out.ev = ev;
     out.theta_e = theta_e;
