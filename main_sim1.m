@@ -22,6 +22,8 @@ sim.w0 = [0.2; -0.15; 0.10];
 
 % torque saturation (engineering constraint)
 sim.tau_limit = [8; 8; 8];           % N·m
+% output-only torque smoothing for plotting (0 = off)
+sim.tau_smooth_tau = 0.02;           % s, small value to reduce initial spike
 
 % disturbance function (Sim-1: d=0)
 sim.dist_fn = @(t,x) [0;0;0];

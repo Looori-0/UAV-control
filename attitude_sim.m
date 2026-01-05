@@ -21,11 +21,20 @@ function out = attitude_sim(ctrlName, sim)
     if ~isfield(sim,'dist_fn') || isempty(sim.dist_fn)
         sim.dist_fn = @(t,x) [0;0;0]; % default: no disturbance
     end
+    if ~isfield(sim,'tau_smooth_tau')
+        sim.tau_smooth_tau = 0;
+    end
     if ~isfield(sim,'ffts') || ~isfield(sim.ffts,'rcond_thr')
         sim.ffts.rcond_thr = 1e-8;
     end
+    if ~isfield(sim,'ffts') || ~isfield(sim.ffts,'eps')
+        sim.ffts.eps = 1e-3;
+    end
     if ~isfield(sim,'tsmc') || ~isfield(sim.tsmc,'rcond_thr')
         sim.tsmc.rcond_thr = 1e-8;
+    end
+    if ~isfield(sim,'tsmc') || ~isfield(sim.tsmc,'eps')
+        sim.tsmc.eps = 1e-3;
     end
 
     Tend = sim.Tend;
@@ -65,20 +74,28 @@ function out = attitude_sim(ctrlName, sim)
 
     [~, ev, theta_e] = quat_error_series(q, qd);
 
-    % ---------------- compute tau (use ODE nodes then interpolate) ----------------
-    N_ode = size(X_ode,1);
-    tau_ode = zeros(N_ode,3);
-    for i = 1:N_ode
-        tau_i = control_tau(ctrlName, X_ode(i,:).', sim);
-        tau_ode(i,:) = tau_i(:).';
+    % ---------------- compute tau on uniform grid (avoid ODE-node interpolation artifacts) ----------------
+    N_grid = size(Xg,1);
+    tau = zeros(N_grid,3);
+    for i = 1:N_grid
+        tau_i = control_tau(ctrlName, Xg(i,:).', sim);
+        tau(i,:) = tau_i(:).';
     end
-    % interpolate torque to uniform grid (linear avoids artifacts for non-smooth control)
-    tau = interp1(t_ode, tau_ode, t_grid, 'linear');
 
 
     out.t = t_grid;
     out.q = q;
     out.w = w;
+    % optional output-only smoothing for plotting (does not affect dynamics)
+    if sim.tau_smooth_tau > 0
+        alpha = dt / (sim.tau_smooth_tau + dt);
+        tau_f = tau;
+        for k = 2:size(tau,1)
+            tau_f(k,:) = tau_f(k-1,:) + alpha * (tau(k,:) - tau_f(k-1,:));
+        end
+        tau = tau_f;
+    end
+
     out.tau = tau;
     out.ev = ev;
     out.theta_e = theta_e;
@@ -203,7 +220,7 @@ function tau = control_tau(ctrlName, x, sim)
             s = e_dot + lam * sig_pow(e, r);
 
             % G_t(e) = diag(lam*r*|e|^(r-1))
-            eps0 = 1e-8;
+            eps0 = sim.tsmc.eps;
             Gdiag = lam*r*(abs(e)+eps0).^(r-1);
 
             % Adot = 0.5*(qe0_dot*I + skew(e_dot)), qe0_dot = -0.5*e^T*w
@@ -250,7 +267,7 @@ function tau = control_tau(ctrlName, x, sim)
             % sliding surface (保持不变)
             s = e_dot + lam1*sig_pow(e, r1) + lam2*sig_pow(e, r2);
 
-            eps_reg = 0.002;  % 正则化因子，数值越大曲线越平滑，建议 0.002 ~ 0.01
+            eps_reg = sim.ffts.eps;  % 正则化因子，数值越大曲线越平滑，建议 0.002 ~ 0.01
             
             % 第一项 (奇异项): r1 * (|e| + eps_reg)^(r1-1)
             term1 = r1 * (abs(e) + eps_reg).^(r1-1);
@@ -280,6 +297,17 @@ function tau = control_tau(ctrlName, x, sim)
             thr2 = 10*thr1;
 
             w_dot_cmd = A \ v;
+            w2 = (A.'*A + mu*eye(3)) \ (A.'*v); % DLS
+
+            if any(~isfinite(w_dot_cmd))
+                w_dot_cmd = w2;
+            end
+
+            cnd = rcond(A);
+            g = (cnd - thr1) / max(thr2 - thr1, 1e-12);
+            g = min(max(g, 0), 1);
+
+            w_dot_cmd = g*w_dot_cmd + (1-g)*w2;
 
             % use dhat from observer state
             dhat = x(11:13);
